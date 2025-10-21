@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     
     # Supabase Configuration
     supabase_url: str = Field(..., env="SUPABASE_URL")
-    supabase_service_key: str = Field(..., env="SUPABASE_SERVICE_ROLE_KEY")
+    supabase_service_role_key: str = Field(..., env="SUPABASE_SERVICE_ROLE_KEY")
     
     # Storage Buckets
     bucket_datasets: str = Field(default="datasets", env="BUCKET_DATASETS")
@@ -65,7 +65,7 @@ def get_supabase_client() -> Client:
     
     supabase: Client = create_client(
         settings.supabase_url,
-        settings.supabase_service_key
+        settings.supabase_service_role_key
     )
     
     return supabase
