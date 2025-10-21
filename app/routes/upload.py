@@ -47,20 +47,37 @@ async def upload_dataset(
             file_options={"content-type": file.content_type}
         )
         
-        # Leer CSV para obtener info
-        df = pd.read_csv(BytesIO(file_content))
+        # 🔹 Detectar y leer el archivo según su extensión
+        try:
+            if file.filename.endswith(".csv"):
+                try:
+                    df = pd.read_csv(BytesIO(file_content), encoding="utf-8")
+                except UnicodeDecodeError:
+                    df = pd.read_csv(BytesIO(file_content), encoding="latin1")
+
+            elif file.filename.endswith(".xlsx"):
+                df = pd.read_excel(BytesIO(file_content))
+
+            elif file.filename.endswith(".json"):
+                df = pd.read_json(BytesIO(file_content))
+
+            else:
+                raise HTTPException(400, f"Formato no soportado: {file.filename}")
+
+        except Exception as e:
+            raise HTTPException(400, f"Error al leer el archivo: {str(e)}")
         
         # Registrar en BD
         dataset_id = str(uuid.uuid4())
         supabase_client.table("datasets").insert({
-            "id": dataset_id,
             "user_id": user_id,
             "name": file.filename,
             "file_path": file_path_storage,
-            "file_type": file.content_type,
+            "file_type": file.filename.split(".")[-1].lower(),
             "file_size": file_size,
             "num_rows": len(df),
             "num_columns": len(df.columns),
+            "columns_info": df.columns.tolist(),
             "uploaded_at": datetime.utcnow().isoformat()
         }).execute()
         
