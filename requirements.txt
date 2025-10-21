@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pandas
+numpy
+scikit-learn
+torch
+torchvision
+torchaudio
+joblib
+supabase
+openpyxl
+aiofiles
+python-dotenv
+pydantic
+pydantic-settings

@@ -1,0 +1,31 @@
+# Ignorar entorno virtual
+env/
+.env/
+
+# Ignorar __pycache__
+__pycache__/
+*.pyc
+
+
+# Node
+/node_modules
+/.pnp
+.pnp.js
+/build
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.env
+.env
+.env.*
+env/
+**/env/
+
+# Sistema
+.DS_Store
+Thumbs.db
+*.log
