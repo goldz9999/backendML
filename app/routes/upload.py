@@ -96,3 +96,56 @@ async def upload_dataset(
         raise
     except Exception as e:
         raise HTTPException(500, f"Error al subir dataset: {str(e)}")
+
+
+@router.get("/datasets/{user_id}")
+async def get_user_datasets(user_id: str):
+    """
+    Obtiene todos los datasets de un usuario específico
+    """
+    try:
+        # Validar UUID
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(400, "user_id debe ser un UUID válido")
+        
+        # Obtener datasets del usuario desde Supabase
+        response = supabase_client.table("datasets")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("uploaded_at", desc=True)\
+            .execute()
+        
+        if not response.data:
+            return {
+                "datasets": [],
+                "total": 0,
+                "user_id": user_id
+            }
+        
+        # Formatear datos para el frontend
+        datasets = []
+        for dataset in response.data:
+            datasets.append({
+                "id": dataset["id"],
+                "name": dataset["name"],
+                "file_type": dataset["file_type"],
+                "file_size": dataset["file_size"],
+                "file_size_mb": round(dataset["file_size"] / (1024 * 1024), 2),
+                "num_rows": dataset.get("num_rows", 0),
+                "num_columns": dataset.get("num_columns", 0),
+                "uploaded_at": dataset["uploaded_at"],
+                "file_path": dataset["file_path"]
+            })
+        
+        return {
+            "datasets": datasets,
+            "total": len(datasets),
+            "user_id": user_id
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error al obtener datasets: {str(e)}")
