@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
 from app.config.settings import get_settings
-from app.routes import upload, clean, train
+from app.routes import upload, clean, train  # ✅ clean ya está importado
 from app.schemas.models import HealthCheckResponse
 
 settings = get_settings()
@@ -26,9 +26,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Incluir routers
+# ✅ Incluir routers - clean ya incluye los endpoints /analyze y /clean
 app.include_router(upload.router, prefix=settings.api_prefix, tags=["Upload"])
-app.include_router(clean.router, prefix=settings.api_prefix, tags=["Clean"])
+app.include_router(clean.router, prefix=settings.api_prefix, tags=["Clean"])  # ✅ Aquí están /analyze y /clean
 app.include_router(train.router, prefix=settings.api_prefix, tags=["Train"])
 
 @app.get("/")
@@ -65,6 +65,12 @@ async def health_check():
 async def startup_event():
     print("🚀 Backend ML API iniciado")
     print(f"📚 Docs: http://localhost:8000/docs")
+    print(f"✅ Endpoints disponibles:")
+    print(f"   - POST /api/upload")
+    print(f"   - GET  /api/datasets/{{user_id}}")
+    print(f"   - POST /api/analyze")  # ✅ Este endpoint ahora existe
+    print(f"   - POST /api/clean")
+    print(f"   - POST /api/train")
 
 @app.on_event("shutdown")
 async def shutdown_event():

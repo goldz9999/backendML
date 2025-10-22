@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import pandas as pd
 from io import BytesIO
+from typing import List, Dict, Any
 from app.config.settings import supabase_client
 
 router = APIRouter()
@@ -10,25 +11,34 @@ router = APIRouter()
 
 class AnalyzeDatasetRequest(BaseModel):
     user_id: str
-    dataset_id: str
+    dataset_id: int
 
 
 class AnalyzeDatasetResponse(BaseModel):
-    dataset_id: str
+    dataset_id: int
     total_rows: int
     total_columns: int
     columns_info: dict  # {"columna": {"dtype": "int64", "nulls": 5, "null_percentage": 10.5}}
     total_nulls: int
+    preview_data: List[Dict[str, Any]]  # 🆕 NUEVO: Lista de filas para preview
 
 
 @router.post("/analyze", response_model=AnalyzeDatasetResponse)
 async def analyze_dataset(request: AnalyzeDatasetRequest):
     """
-    Analiza un dataset y retorna información sobre valores nulos.
-    Este endpoint se llama ANTES de limpiar para mostrar al usuario qué se encontró.
+    Analiza un dataset y retorna información sobre valores nulos + preview de datos.
+    Soporta CSV y XLSX.
     """
+    print("=" * 50)
+    print("🔍 ANALYZE ENDPOINT CALLED")
+    print(f"📦 Request received:")
+    print(f"   user_id: {request.user_id}")
+    print(f"   dataset_id: {request.dataset_id}")
+    print("=" * 50)
+    
     try:
         # 1. Obtener información del dataset desde la BD
+        print(f"🔎 Buscando dataset en BD...")
         dataset = supabase_client.table("datasets")\
             .select("*")\
             .eq("id", request.dataset_id)\
@@ -36,14 +46,38 @@ async def analyze_dataset(request: AnalyzeDatasetRequest):
             .single()\
             .execute()
         
+        print(f"📊 Dataset encontrado: {dataset.data}")
+        
         if not dataset.data:
+            print("❌ Dataset no encontrado en BD")
             raise HTTPException(status_code=404, detail="Dataset no encontrado")
         
         file_path = dataset.data["file_path"]
+        file_type = dataset.data.get("file_type", "csv").lower()
+        print(f"📁 File path: {file_path}")
+        print(f"📄 File type: {file_type}")
         
-        # 2. Descargar CSV desde Supabase Storage
+        # 2. Descargar archivo desde Storage
+        print(f"⬇️  Descargando archivo desde Storage...")
         file_bytes = supabase_client.storage.from_("datasets").download(file_path)
-        df = pd.read_csv(BytesIO(file_bytes))
+        print(f"✅ Archivo descargado: {len(file_bytes)} bytes")
+        
+        # 🔹 Leer el archivo según su tipo
+        try:
+            if file_type == "csv":
+                try:
+                    df = pd.read_csv(BytesIO(file_bytes), encoding="utf-8")
+                except UnicodeDecodeError:
+                    df = pd.read_csv(BytesIO(file_bytes), encoding="latin1")
+            elif file_type in ["xlsx", "xls"]:
+                df = pd.read_excel(BytesIO(file_bytes))
+            else:
+                raise HTTPException(400, f"Tipo de archivo no soportado: {file_type}")
+        except Exception as e:
+            raise HTTPException(400, f"Error al leer el archivo: {str(e)}")
+        
+        print(f"📊 Archivo leído: {len(df)} filas, {len(df.columns)} columnas")
+        print(f"📋 Columnas: {list(df.columns)}")
         
         # 3. Analizar cada columna
         columns_info = {}
@@ -60,146 +94,52 @@ async def analyze_dataset(request: AnalyzeDatasetRequest):
                 "is_numeric": pd.api.types.is_numeric_dtype(df[column])
             }
         
-        return AnalyzeDatasetResponse(
+        print(f"📈 Análisis completado:")
+        print(f"   Total nulls: {total_nulls}")
+        print(f"   Columnas analizadas: {len(columns_info)}")
+        
+        # 4. Generar preview de las primeras 20 filas
+        print(f"🖼️  Generando preview...")
+        preview_rows = []
+        for idx, row in df.iterrows():
+            row_dict = {"_id": int(idx) + 1}
+            
+            for column in df.columns:
+                value = row[column]
+                
+                if pd.isna(value):
+                    row_dict[column] = None
+                elif isinstance(value, (pd.Timestamp, pd.Timedelta)):
+                    row_dict[column] = str(value)
+                elif isinstance(value, (int, float)):
+                    row_dict[column] = float(value) if isinstance(value, float) else int(value)
+                else:
+                    row_dict[column] = str(value)
+            
+            preview_rows.append(row_dict)
+        
+        print(f"✅ Preview generado: {len(preview_rows)} filas")
+        
+        response_data = AnalyzeDatasetResponse(
             dataset_id=request.dataset_id,
             total_rows=len(df),
             total_columns=len(df.columns),
             columns_info=columns_info,
-            total_nulls=int(total_nulls)
+            total_nulls=int(total_nulls),
+            preview_data=preview_rows
         )
+        
+        print(f"🎉 Response preparado exitosamente")
+        print("=" * 50)
+        
+        return response_data
     
+    except HTTPException as he:
+        print(f"❌ HTTPException: {he.detail}")
+        raise
     except Exception as e:
+        print(f"💥 Error inesperado: {type(e).__name__}")
+        print(f"💥 Mensaje: {str(e)}")
+        import traceback
+        print(f"💥 Traceback:\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Error al analizar dataset: {str(e)}")
-
-
-class CleanDatasetRequest(BaseModel):
-    user_id: str
-    dataset_id: str
-    replace_nulls: bool = True  # Si True, reemplaza NULL por "N/A"
-
-
-class CleanDatasetResponse(BaseModel):
-    message: str
-    cleaned_dataset_id: str
-    original_dataset_id: str
-    file_path: str
-    original_rows: int
-    cleaned_rows: int
-    columns_with_nulls: dict
-    status_changes: dict  # {"row_2": "inactive", "row_4": "active"}
-
-
-@router.post("/clean", response_model=CleanDatasetResponse)
-async def clean_dataset(request: CleanDatasetRequest):
-    """
-    Limpia el dataset reemplazando NULL por "N/A" y calcula el status de cada fila.
-    
-    Reglas:
-    - NULL en columna numérica (int/float) → status = "inactive"
-    - NULL en columna de texto (string) → status = "active"
-    """
-    try:
-        # 1. Obtener dataset original
-        dataset = supabase_client.table("datasets")\
-            .select("*")\
-            .eq("id", request.dataset_id)\
-            .eq("user_id", request.user_id)\
-            .single()\
-            .execute()
-        
-        if not dataset.data:
-            raise HTTPException(status_code=404, detail="Dataset no encontrado")
-        
-        file_path = dataset.data["file_path"]
-        
-        # 2. Descargar y leer CSV
-        file_bytes = supabase_client.storage.from_("datasets").download(file_path)
-        df = pd.read_csv(BytesIO(file_bytes))
-        
-        # 3. Guardar información de tipos de datos ANTES de limpiar
-        original_dtypes = df.dtypes.to_dict()
-        columns_with_nulls = {}
-        
-        # Identificar columnas con nulls
-        for column in df.columns:
-            null_count = df[column].isna().sum()
-            if null_count > 0:
-                columns_with_nulls[column] = {
-                    "nulls": int(null_count),
-                    "original_dtype": str(original_dtypes[column]),
-                    "is_numeric": pd.api.types.is_numeric_dtype(df[column])
-                }
-        
-        # 4. Crear columna "status" si no existe
-        if "status" not in df.columns:
-            df["status"] = "active"  # Default: active
-        
-        # 5. Calcular status para cada fila
-        status_changes = {}
-        
-        for index, row in df.iterrows():
-            has_null_in_numeric = False
-            
-            # Verificar si la fila tiene NULL en alguna columna numérica
-            for column, info in columns_with_nulls.items():
-                if pd.isna(row[column]) and info["is_numeric"]:
-                    has_null_in_numeric = True
-                    break
-            
-            # Asignar status
-            if has_null_in_numeric:
-                df.at[index, "status"] = "inactive"
-                status_changes[f"row_{index}"] = "inactive"
-            else:
-                df.at[index, "status"] = "active"
-                if f"row_{index}" not in status_changes:
-                    status_changes[f"row_{index}"] = "active"
-        
-        # 6. Reemplazar NULL por "N/A" (DESPUÉS de calcular status)
-        if request.replace_nulls:
-            df = df.fillna("N/A")
-        
-        # 7. Generar ID para dataset limpio
-        import uuid
-        cleaned_dataset_id = str(uuid.uuid4())
-        
-        # 8. Convertir DataFrame a CSV
-        csv_buffer = BytesIO()
-        df.to_csv(csv_buffer, index=False)
-        csv_buffer.seek(0)
-        
-        # 9. Subir a bucket "cleaned_datasets"
-        cleaned_file_path = f"{request.user_id}/{cleaned_dataset_id}.csv"
-        
-        supabase_client.storage.from_("cleaned_datasets").upload(
-            path=cleaned_file_path,
-            file=csv_buffer.getvalue(),
-            file_options={"content-type": "text/csv"}
-        )
-        
-        # 10. Registrar en tabla "cleaned_datasets"
-        supabase_client.table("cleaned_datasets").insert({
-            "id": cleaned_dataset_id,
-            "user_id": request.user_id,
-            "original_dataset_id": request.dataset_id,
-            "file_path": cleaned_file_path,
-            "original_rows": len(df),
-            "cleaned_rows": len(df),
-            "rows_removed": 0,  # No removemos filas, solo reemplazamos valores
-            "columns_with_nulls": columns_with_nulls,
-            "status_changes": status_changes
-        }).execute()
-        
-        return CleanDatasetResponse(
-            message="Dataset limpio exitosamente",
-            cleaned_dataset_id=cleaned_dataset_id,
-            original_dataset_id=request.dataset_id,
-            file_path=cleaned_file_path,
-            original_rows=len(df),
-            cleaned_rows=len(df),
-            columns_with_nulls=columns_with_nulls,
-            status_changes=status_changes
-        )
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al limpiar dataset: {str(e)}")
