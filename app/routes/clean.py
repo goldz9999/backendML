@@ -31,7 +31,7 @@ class AnalyzeDatasetResponse(BaseModel):
 class CleanDatasetRequest(BaseModel):
     user_id: str
     dataset_id: int
-    operation: str  # "replace_nulls", "impute", "normalize", "encode"
+    operation: str
     options: Optional[Dict[str, Any]] = None
 
 
@@ -45,6 +45,68 @@ class CleanDatasetResponse(BaseModel):
     columns_with_nulls: Dict[str, Any]
     status_changes: Dict[str, int]
     operations_applied: List[str]
+
+
+class CleanedDatasetInfo(BaseModel):
+    id: int
+    name: str
+    num_rows: int
+    num_columns: int
+    created_at: str
+    cleaning_operations: dict
+    file_path: str
+
+
+@router.get("/cleaned-datasets/{user_id}")
+async def get_cleaned_datasets(user_id: str):
+    """
+    Obtiene todos los datasets limpios de un usuario.
+    Necesario para el frontend de Train.
+    """
+    try:
+        # Validar UUID
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(400, "user_id debe ser un UUID válido")
+        
+        # Obtener datasets limpios
+        response = supabase_client.table("cleaned_datasets")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .execute()
+        
+        if not response.data:
+            return {
+                "datasets": [],
+                "total": 0,
+                "user_id": user_id
+            }
+        
+        # Formatear respuesta
+        datasets = []
+        for dataset in response.data:
+            datasets.append({
+                "id": dataset["id"],
+                "name": dataset["name"],
+                "num_rows": dataset["num_rows"],
+                "num_columns": dataset["num_columns"],
+                "created_at": dataset["created_at"],
+                "cleaning_operations": dataset.get("cleaning_operations", {}),
+                "file_path": dataset["file_path"]
+            })
+        
+        return {
+            "datasets": datasets,
+            "total": len(datasets),
+            "user_id": user_id
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Error al obtener datasets limpios: {str(e)}")
 
 
 @router.post("/analyze", response_model=AnalyzeDatasetResponse)
@@ -145,7 +207,7 @@ async def analyze_dataset(request: AnalyzeDatasetRequest):
         print(f"✅ Preview generado: {len(preview_rows)} filas")
         
         response_data = AnalyzeDatasetResponse(
-            dataset_id=str(request.dataset_id),  # ✅ Convertir a string
+            dataset_id=str(request.dataset_id),
             total_rows=len(df),
             total_columns=len(df.columns),
             columns_info=columns_info,
@@ -286,11 +348,11 @@ async def clean_dataset(request: CleanDatasetRequest):
                             "imputed_value": str(mode_value)
                         }
             
-            # 🔥 IMPORTANTE: Cambiar todos los status a "active"
+            # Cambiar todos los status a "active"
             if "status" not in df.columns:
                 df["status"] = "active"
             else:
-                df["status"] = "active"  # Forzar todo a activo
+                df["status"] = "active"
             
             status_changes = {
                 "active": int(len(df)),
@@ -370,10 +432,10 @@ async def clean_dataset(request: CleanDatasetRequest):
             raise HTTPException(400, f"Operación no soportada: {request.operation}")
                 
         # 4. Guardar dataset limpio
-        original_file_name = dataset.data["name"]  # ej: datos1_1000.csv
+        original_file_name = dataset.data["name"]
         file_name, file_ext = os.path.splitext(original_file_name)
 
-        cleaned_file_name = f"{file_name}_cleaned{file_ext}"  # ej: datos1_1000_cleaned.csv
+        cleaned_file_name = f"{file_name}_cleaned{file_ext}"
         cleaned_file_path = f"{request.user_id}/{cleaned_file_name}"
         cleaned_dataset_id = str(uuid.uuid4())
         
@@ -386,7 +448,7 @@ async def clean_dataset(request: CleanDatasetRequest):
         print(f"   Path: {cleaned_file_path}")
         print(f"   Size: {len(csv_buffer.getvalue())} bytes")
         
-        # Subir a Storage - IMPORTANTE: verificar que el bucket existe
+        # Subir a Storage
         try:
             upload_response = supabase_client.storage.from_("cleaned_datasets").upload(
                 path=cleaned_file_path,
@@ -396,10 +458,9 @@ async def clean_dataset(request: CleanDatasetRequest):
             print(f"✅ Archivo subido: {upload_response}")
         except Exception as storage_error:
             print(f"❌ Error al subir a Storage: {str(storage_error)}")
-            print(f"   Puede que el bucket 'cleaned_datasets' no exista")
             raise HTTPException(
                 status_code=500, 
-                detail=f"Error al guardar archivo en Storage. Verifica que el bucket 'cleaned_datasets' exista: {str(storage_error)}"
+                detail=f"Error al guardar archivo en Storage: {str(storage_error)}"
             )
         
         # 5. Registrar en BD
@@ -422,7 +483,6 @@ async def clean_dataset(request: CleanDatasetRequest):
             print(f"✅ Registro creado en BD: {insert_response}")
         except Exception as db_error:
             print(f"❌ Error al insertar en BD: {str(db_error)}")
-            print(f"   Tipo de error: {type(db_error).__name__}")
             import traceback
             print(traceback.format_exc())
             raise HTTPException(
