@@ -253,7 +253,7 @@ async def clean_dataset(request: CleanDatasetRequest):
             }
             
             operations_applied.append("replace_nulls")
-        
+
         elif request.operation == "impute":
             print("🔄 Aplicando: Imputar valores nulos")
             
@@ -267,29 +267,47 @@ async def clean_dataset(request: CleanDatasetRequest):
                         elif method == "median":
                             df[column] = df[column].fillna(df[column].median())
                         elif method == "mode":
-                            df[column] = df[column].fillna(df[column].mode()[0] if not df[column].mode().empty else 0)
+                            mode_value = df[column].mode()[0] if not df[column].mode().empty else 0
+                            df[column] = df[column].fillna(mode_value)
                         
                         columns_with_nulls[column] = {
                             "method": method,
-                            "is_numeric": True
+                            "is_numeric": True,
+                            "imputed_value": "calculated"
                         }
                     else:
-                        # Para columnas no numéricas, usar moda
+                        # Para columnas categóricas siempre usar moda
                         mode_value = df[column].mode()[0] if not df[column].mode().empty else "Unknown"
                         df[column] = df[column].fillna(mode_value)
                         
                         columns_with_nulls[column] = {
                             "method": "mode",
-                            "is_numeric": False
+                            "is_numeric": False,
+                            "imputed_value": str(mode_value)
                         }
             
+            # 🔥 IMPORTANTE: Cambiar todos los status a "active"
+            if "status" not in df.columns:
+                df["status"] = "active"
+            else:
+                df["status"] = "active"  # Forzar todo a activo
+            
+            status_changes = {
+                "active": int(len(df)),
+                "inactive": 0
+            }
+            
             operations_applied.append(f"impute_{method}")
-        
+
         elif request.operation == "normalize":
             print("🔄 Aplicando: Normalizar datos con StandardScaler")
             
             scaler = StandardScaler()
             numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
+            
+            # Remover 'status' si existe en columnas numéricas
+            if "status" in numeric_columns:
+                numeric_columns.remove("status")
             
             if numeric_columns:
                 df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
@@ -300,31 +318,57 @@ async def clean_dataset(request: CleanDatasetRequest):
                         "std": scaler.scale_.tolist()
                     }
                 }
+            else:
+                columns_with_nulls = {
+                    "normalized_columns": [],
+                    "message": "No hay columnas numéricas para normalizar"
+                }
+            
+            # Mantener status si existe
+            if "status" not in df.columns:
+                df["status"] = "active"
+            
+            status_changes = {
+                "active": int((df["status"] == "active").sum()),
+                "inactive": int((df["status"] == "inactive").sum()) if "status" in df.columns else 0
+            }
             
             operations_applied.append("normalize_standard_scaler")
-        
+
         elif request.operation == "encode":
             print("🔄 Aplicando: Codificar variables categóricas")
             
             categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
             encoders = {}
             
+            # Remover 'status' de columnas categóricas
+            if "status" in categorical_columns:
+                categorical_columns.remove("status")
+            
             for column in categorical_columns:
-                if column != "status":  # No codificar la columna status
-                    le = LabelEncoder()
-                    df[column] = le.fit_transform(df[column].astype(str))
-                    encoders[column] = le.classes_.tolist()
+                le = LabelEncoder()
+                df[column] = le.fit_transform(df[column].astype(str))
+                encoders[column] = le.classes_.tolist()
             
             columns_with_nulls = {
                 "encoded_columns": categorical_columns,
                 "encoders": encoders
             }
             
+            # Mantener status si existe
+            if "status" not in df.columns:
+                df["status"] = "active"
+            
+            status_changes = {
+                "active": int((df["status"] == "active").sum()),
+                "inactive": int((df["status"] == "inactive").sum()) if "status" in df.columns else 0
+            }
+            
             operations_applied.append("encode_label_encoder")
-        
+
         else:
             raise HTTPException(400, f"Operación no soportada: {request.operation}")
-        
+                
         # 4. Guardar dataset limpio
         original_file_name = dataset.data["name"]  # ej: datos1_1000.csv
         file_name, file_ext = os.path.splitext(original_file_name)
