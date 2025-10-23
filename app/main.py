@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 
 from app.config.settings import get_settings
-from app.routes import upload, clean, train  # ✅ clean ya está importado
+from app.routes import upload, clean, train
 from app.schemas.models import HealthCheckResponse
 
 settings = get_settings()
@@ -17,10 +17,16 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# CORS
+# ✅ CORS MEJORADO - Permitir Vercel
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080",
+        "https://predict-prep-port.vercel.app",  # ✅ Tu dominio de Vercel
+        "https://*.vercel.app",  # ✅ Todos los subdominios de Vercel
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
