@@ -424,7 +424,7 @@ async def clean_dataset(request: CleanDatasetRequest):
         print(traceback.format_exc())
         raise HTTPException(500, f"Error al limpiar dataset: {str(e)}")
 
-    
+
 @router.post("/analyze-cleaned")
 async def analyze_cleaned_dataset(request: AnalyzeDatasetRequest):
         """
@@ -455,7 +455,10 @@ async def analyze_cleaned_dataset(request: AnalyzeDatasetRequest):
             if "status" in df.columns:
                 df = df.drop(columns=["status"])
             
-            # 5. Retornar columnas y preview
+            # 🔥 5. Reemplazar NaN con None antes de serializar
+            df = df.replace({np.nan: None, np.inf: None, -np.inf: None})
+            
+            # 6. Retornar columnas y preview
             return {
                 "dataset_id": str(request.dataset_id),
                 "columns": df.columns.tolist(),
