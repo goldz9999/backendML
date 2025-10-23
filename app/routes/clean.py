@@ -234,7 +234,7 @@ async def analyze_dataset(request: AnalyzeDatasetRequest):
 @router.post("/clean", response_model=CleanDatasetResponse)
 async def clean_dataset(request: CleanDatasetRequest):
     """
-    Aplica una o varias operaciones de limpieza a un dataset y lo guarda en cleaned_datasets.
+    Aplica TODAS las operaciones de limpieza a un dataset y lo guarda UNA SOLA VEZ.
     """
     print("=" * 50)
     print("🧹 CLEAN ENDPOINT CALLED")
@@ -277,7 +277,8 @@ async def clean_dataset(request: CleanDatasetRequest):
         # 🔹 3. Asegurar que operation sea lista
         operations = request.operation if isinstance(request.operation, list) else [request.operation]
 
-        for op in request.operation:
+        # 🔹 4. Aplicar TODAS las operaciones en secuencia
+        for op in operations:
             print(f"🔄 Aplicando operación: {op}")
 
             if op == "replace_nulls":
@@ -289,7 +290,10 @@ async def clean_dataset(request: CleanDatasetRequest):
                             "is_numeric": pd.api.types.is_numeric_dtype(df[column])
                         }
                         df[column] = df[column].fillna("N/A")
-                df["status"] = "active"
+                
+                if "status" not in df.columns:
+                    df["status"] = "active"
+                
                 for column, info in columns_with_nulls.items():
                     if info["is_numeric"]:
                         df.loc[df[column] == "N/A", "status"] = "inactive"
@@ -341,7 +345,7 @@ async def clean_dataset(request: CleanDatasetRequest):
             else:
                 raise HTTPException(400, f"Operación no soportada: {op}")
 
-        # 🔹 4. Guardar resultado final (una sola vez)
+        # 🔹 5. Guardar resultado final UNA SOLA VEZ
         cleaned_file_name = f"{dataset.data['name'].split('.')[0]}_cleaned.csv"
         cleaned_file_path = f"{request.user_id}/{cleaned_file_name}"
         cleaned_dataset_id = str(uuid.uuid4())
@@ -350,26 +354,58 @@ async def clean_dataset(request: CleanDatasetRequest):
         df.to_csv(csv_buffer, index=False, encoding="utf-8")
         csv_buffer.seek(0)
 
+        # ✅ Sobrescribir si ya existe
+        try:
+            supabase_client.storage.from_("cleaned_datasets").remove([cleaned_file_path])
+        except:
+            pass
+
         supabase_client.storage.from_("cleaned_datasets").upload(
             path=cleaned_file_path,
             file=csv_buffer.getvalue(),
             file_options={"content-type": "text/csv"}
         )
 
-        supabase_client.table("cleaned_datasets").insert({
-            "user_id": request.user_id,
-            "original_dataset_id": str(request.dataset_id),
-            "name": cleaned_file_name,
-            "num_rows": len(df),
-            "num_columns": len(df.columns),
-            "cleaning_operations": {
-                "operations": operations_applied,
-                "columns_affected": list(columns_with_nulls.keys())
-            },
-            "file_path": cleaned_file_path,
-            "columns_with_nulls": columns_with_nulls,
-            "created_at": datetime.utcnow().isoformat()
-        }).execute()
+        # ✅ Insertar o actualizar en BD
+        existing = supabase_client.table("cleaned_datasets")\
+            .select("id")\
+            .eq("user_id", request.user_id)\
+            .eq("original_dataset_id", str(request.dataset_id))\
+            .execute()
+
+        if existing.data:
+            # Actualizar registro existente
+            supabase_client.table("cleaned_datasets")\
+                .update({
+                    "name": cleaned_file_name,
+                    "num_rows": len(df),
+                    "num_columns": len(df.columns),
+                    "cleaning_operations": {
+                        "operations": operations_applied,
+                        "columns_affected": list(columns_with_nulls.keys())
+                    },
+                    "file_path": cleaned_file_path,
+                    "columns_with_nulls": columns_with_nulls,
+                    "created_at": datetime.utcnow().isoformat()
+                })\
+                .eq("id", existing.data[0]["id"])\
+                .execute()
+        else:
+            # Crear nuevo registro
+            supabase_client.table("cleaned_datasets").insert({
+                "user_id": request.user_id,
+                "original_dataset_id": str(request.dataset_id),
+                "name": cleaned_file_name,
+                "num_rows": len(df),
+                "num_columns": len(df.columns),
+                "cleaning_operations": {
+                    "operations": operations_applied,
+                    "columns_affected": list(columns_with_nulls.keys())
+                },
+                "file_path": cleaned_file_path,
+                "columns_with_nulls": columns_with_nulls,
+                "created_at": datetime.utcnow().isoformat()
+            }).execute()
 
         return CleanDatasetResponse(
             message="Dataset limpio creado exitosamente",

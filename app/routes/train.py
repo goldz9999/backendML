@@ -197,24 +197,34 @@ def load_cleaned_dataset(user_id: str, dataset_id: int):
 
 
 def prepare_data_for_training(df: pd.DataFrame, target_column: str, columns_with_nulls: dict):
-    # ✅ VERIFICAR TARGET PRIMERO
-    if target_column not in df.columns:
-        raise HTTPException(400, f"Columna target '{target_column}' no encontrada")
+    """
+    Prepara datos para entrenamiento:
+    1. Excluye columnas con "N/A" que eran numéricas
+    2. Filtra filas con status="active"
+    3. Convierte categóricas a numéricas
+    """
     
     # Identificar columnas a excluir
     excluded_columns = []
     for column, info in columns_with_nulls.items():
-        # ✅ NO EXCLUIR EL TARGET
-        if info.get("is_numeric", False) and column != target_column:
+        if info.get("is_numeric", False):
             excluded_columns.append(column)
     
     print(f"🚫 Columnas excluidas: {excluded_columns}")
-    print(f"🎯 Target preservado: {target_column}")
+    
+    # Filtrar filas activas
+    if "status" in df.columns:
+        df = df[df["status"] == "active"].copy()
+        print(f"✅ Filas activas: {len(df)}")
     
     # Eliminar columnas excluidas y status
     columns_to_drop = excluded_columns + ["status"]
     columns_to_drop = [col for col in columns_to_drop if col in df.columns]
     df = df.drop(columns=columns_to_drop, errors='ignore')
+    
+    # Verificar target
+    if target_column not in df.columns:
+        raise HTTPException(400, f"Columna target '{target_column}' no encontrada")
     
     # Separar X e y
     X = df.drop(columns=[target_column])
