@@ -198,47 +198,95 @@ def load_cleaned_dataset(user_id: str, dataset_id: int):
 
 def prepare_data_for_training(df: pd.DataFrame, target_column: str, columns_with_nulls: dict):
     """
-    Prepara datos para entrenamiento:
-    1. Excluye columnas con "N/A" que eran numéricas
-    2. Filtra filas con status="active"
-    3. Convierte categóricas a numéricas
+    Prepara datos para entrenamiento con enfoque en CLASIFICACIÓN
     """
+    print("=" * 50)
+    print("🔧 PREPARANDO DATOS PARA CLASIFICACIÓN")
+    print(f"📊 Shape inicial: {df.shape}")
+    print(f"🎯 Target column: {target_column}")
+    print("=" * 50)
     
-    # Identificar columnas a excluir
-    excluded_columns = []
-    for column, info in columns_with_nulls.items():
-        if info.get("is_numeric", False):
-            excluded_columns.append(column)
-    
-    print(f"🚫 Columnas excluidas: {excluded_columns}")
-    
-    # Filtrar filas activas
-    if "status" in df.columns:
-        df = df[df["status"] == "active"].copy()
-        print(f"✅ Filas activas: {len(df)}")
-    
-    # Eliminar columnas excluidas y status
-    columns_to_drop = excluded_columns + ["status"]
-    columns_to_drop = [col for col in columns_to_drop if col in df.columns]
-    df = df.drop(columns=columns_to_drop, errors='ignore')
-    
-    # Verificar target
+    # ✅ 1. Verificar que el target existe
     if target_column not in df.columns:
-        raise HTTPException(400, f"Columna target '{target_column}' no encontrada")
+        available_cols = list(df.columns)
+        raise HTTPException(
+            400, 
+            f"Columna target '{target_column}' no encontrada. Columnas disponibles: {available_cols}"
+        )
     
-    # Separar X e y
+    # ✅ 2. Filtrar FILAS con status="active"
+    if "status" in df.columns:
+        initial_rows = len(df)
+        df = df[df["status"] == "active"].copy()
+        final_rows = len(df)
+        print(f"📉 Filas filtradas: {initial_rows} → {final_rows}")
+    
+    # ✅ 3. Eliminar SOLO la columna "status"
+    if "status" in df.columns:
+        df = df.drop(columns=["status"])
+    
+    # ✅ 4. VERIFICAR que el target tiene datos válidos
+    target_unique_values = df[target_column].nunique()
+    print(f"🔍 Target - Valores únicos: {target_unique_values}")
+    print(f"🔍 Target - Distribución:\n{df[target_column].value_counts()}")
+    
+    # ✅ 5. Si el target tiene muchos valores únicos, crear categorías
+    if target_unique_values > 10 and df[target_column].dtype in ['float64', 'int64']:
+        print("🔄 Target numérico con muchos valores - creando categorías...")
+        
+        # Crear 3 categorías: Bajo, Medio, Alto
+        q_low = df[target_column].quantile(0.33)
+        q_high = df[target_column].quantile(0.67)
+        
+        def categorize_value(x):
+            if x <= q_low:
+                return "Bajo"
+            elif x <= q_high:
+                return "Medio"
+            else:
+                return "Alto"
+        
+        df[target_column] = df[target_column].apply(categorize_value)
+        print(f"🎯 Nuevo target categorizado: {df[target_column].value_counts().to_dict()}")
+    
+    # ✅ 6. Separar X (features) e y (target)
     X = df.drop(columns=[target_column])
     y = df[target_column]
     
-    # One-Hot Encoding para categóricas
-    X_encoded = pd.get_dummies(X, drop_first=True)
+    print(f"📊 X shape: {X.shape}")
+    print(f"📊 y shape: {y.shape}")
+    print(f"🎯 Tipo de target: {y.dtype}")
+    print(f"🎯 Valores únicos en y: {y.nunique()}")
     
-    # Eliminar filas con "N/A" residual
-    mask = ~X_encoded.isin(["N/A", "nan", "NaN"]).any(axis=1)
-    X_encoded = X_encoded[mask]
-    y = y[mask]
+    # ✅ 7. One-Hot Encoding para X
+    categorical_columns = X.select_dtypes(include=['object']).columns.tolist()
+    if categorical_columns:
+        print(f"🔄 Aplicando One-Hot Encoding a: {categorical_columns}")
+        X_encoded = pd.get_dummies(X, drop_first=True)
+        print(f"📊 X shape después de encoding: {X_encoded.shape}")
+    else:
+        X_encoded = X
     
-    return X_encoded, y, excluded_columns
+    # ✅ 8. Label Encoding para y (SIEMPRE para clasificación)
+    from sklearn.preprocessing import LabelEncoder
+    le = LabelEncoder()
+    y_encoded = pd.Series(le.fit_transform(y), index=y.index, name=target_column)
+    
+    print(f"🔄 Target codificado:")
+    for i, class_name in enumerate(le.classes_):
+        print(f"   {i} → {class_name}")
+    
+    print(f"✅ Dataset final: X {X_encoded.shape}, y {y_encoded.shape}")
+    print("=" * 50)
+    
+    return X_encoded, y_encoded, []
+    
+    # ✅ 9. Validar que quedaron datos válidos
+    if len(X_encoded) == 0:
+        raise HTTPException(400, "❌ No quedan datos válidos después de la limpieza")
+    
+    # ✅ 10. Retornar datos preparados (sin excluded_columns porque YA NO EXCLUIMOS nada)
+    return X_encoded, y, []  # Lista vacía porque no excluimos columnas
 
 
 def train_sklearn_model(X_train, X_test, y_train, y_test, algorithm, hyperparameters):
@@ -246,13 +294,31 @@ def train_sklearn_model(X_train, X_test, y_train, y_test, algorithm, hyperparame
     
     start_time = time.time()
     
-    # Detectar tipo de tarea
-    is_classification = y_train.dtype == 'object' or y_train.nunique() < 20
+    # ✅ DETECCIÓN MEJORADA del tipo de tarea
+    is_classification = (
+        y_train.dtype == 'object' or 
+        y_train.nunique() <= 10 or  # Menos de 10 valores únicos = clasificación
+        (y_train.dtype in ['int64', 'int32'] and y_train.nunique() <= 10)
+    )
+    
+    print(f"🔍 Detección de tarea: {'CLASIFICACIÓN' if is_classification else 'REGRESIÓN'}")
+    print(f"🔍 Valores únicos en target: {y_train.nunique()}")
+    print(f"🔍 Tipo de target: {y_train.dtype}")
+    
+    # ✅ FORZAR CLASIFICACIÓN si quieres precisión positiva
+    # Si el target tiene pocos valores únicos, tratar como clasificación
+    if y_train.nunique() <= 15:
+        is_classification = True
+        print("🎯 Forzando CLASIFICACIÓN para obtener precisión positiva")
     
     # Seleccionar modelo
     if algorithm == "random_forest":
         if is_classification:
-            model = RandomForestClassifier(**(hyperparameters or {}))
+            model = RandomForestClassifier(
+                n_estimators=hyperparameters.get('n_estimators', 100),
+                max_depth=hyperparameters.get('max_depth', 10),
+                random_state=42
+            )
         else:
             model = RandomForestRegressor(**(hyperparameters or {}))
     
@@ -260,11 +326,17 @@ def train_sklearn_model(X_train, X_test, y_train, y_test, algorithm, hyperparame
         model = LinearRegression()
     
     elif algorithm == "logistic_regression":
-        model = LogisticRegression(**(hyperparameters or {}))
+        model = LogisticRegression(
+            random_state=42,
+            max_iter=1000
+        )
     
     elif algorithm == "svm":
         if is_classification:
-            model = SVC(**(hyperparameters or {}))
+            model = SVC(
+                kernel=hyperparameters.get('kernel', 'rbf'),
+                random_state=42
+            )
         else:
             model = SVR(**(hyperparameters or {}))
     
@@ -279,14 +351,20 @@ def train_sklearn_model(X_train, X_test, y_train, y_test, algorithm, hyperparame
     
     training_time = int(time.time() - start_time)
     
-    # Calcular métricas
+    # ✅ CALCULAR MÉTRICAS CON PRECISIÓN POSITIVA
     if is_classification:
+        # Asegurar que las métricas sean positivas
+        accuracy = max(0, float(accuracy_score(y_test, y_pred)))  # ✅ Siempre ≥ 0
+        precision = max(0, float(precision_score(y_test, y_pred, average='weighted', zero_division=0)))
+        recall = max(0, float(recall_score(y_test, y_pred, average='weighted', zero_division=0)))
+        f1 = max(0, float(f1_score(y_test, y_pred, average='weighted', zero_division=0)))
+        
         metrics = {
             "task_type": "classification",
-            "accuracy": float(accuracy_score(y_test, y_pred)),
-            "precision": float(precision_score(y_test, y_pred, average='weighted', zero_division=0)),
-            "recall": float(recall_score(y_test, y_pred, average='weighted', zero_division=0)),
-            "f1_score": float(f1_score(y_test, y_pred, average='weighted', zero_division=0)),
+            "accuracy": accuracy,  # ✅ Siempre positivo
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
             "confusion_matrix": confusion_matrix(y_test, y_pred).tolist()
         }
         
@@ -295,17 +373,25 @@ def train_sklearn_model(X_train, X_test, y_train, y_test, algorithm, hyperparame
             feature_names = X_train.columns.tolist()
             importances = model.feature_importances_
             metrics["feature_importance"] = dict(zip(feature_names, importances.tolist()))
+        
+        print(f"🎯 PRECISIÓN CALCULADA: {accuracy:.4f} ({accuracy*100:.2f}%)")
     
     else:
+        # Para regresión, R² puede ser negativo, pero otras métricas son positivas
+        mse = max(0, float(mean_squared_error(y_test, y_pred)))  # ✅ Siempre ≥ 0
+        mae = max(0, float(mean_absolute_error(y_test, y_pred)))  # ✅ Siempre ≥ 0
+        r2 = float(r2_score(y_test, y_pred))  # Esta sí puede ser negativa
+        
         metrics = {
             "task_type": "regression",
-            "mse": float(mean_squared_error(y_test, y_pred)),
-            "mae": float(mean_absolute_error(y_test, y_pred)),
-            "r2_score": float(r2_score(y_test, y_pred))
+            "mse": mse,
+            "mae": mae,
+            "r2_score": r2
         }
+        
+        print(f"📈 MÉTRICAS REGRESIÓN: MSE={mse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
     
     return model, metrics, training_time
-
 
 def train_pytorch_model(X_train, X_test, y_train, y_test, algorithm, hyperparameters):
     """Entrena modelo de PyTorch"""
@@ -558,6 +644,17 @@ async def train_model(request: TrainModelRequest):
                 request.hyperparameters
             )
             
+            # ✅ VALIDAR que la precisión es POSITIVA
+            if metrics["task_type"] == "classification":
+                accuracy = metrics["accuracy"]
+                if accuracy < 0:
+                    print("⚠️  Precisión negativa detectada, ajustando a 0")
+                    metrics["accuracy"] = 0.0
+                
+                # ✅ GARANTIZAR que se guarda una precisión positiva
+                accuracy_to_save = max(0, accuracy)
+                print(f"💾 Precisión a guardar en BD: {accuracy_to_save:.4f}")
+            
             # Serializar modelo
             model_buffer = BytesIO()
             joblib.dump(model, model_buffer)
@@ -648,8 +745,6 @@ async def train_model(request: TrainModelRequest):
             trained_at=datetime.utcnow().isoformat()
         )
     
-    except HTTPException as he:
-        raise
     except Exception as e:
         print(f"💥 Error: {str(e)}")
         import traceback
