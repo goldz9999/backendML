@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     
     # CORS Configuration
     cors_origins: list[str] = Field(
-        default=["http://localhost:3000", "http://localhost:5173", "https://predict-prep-port.vercel.app/"],
+        default=["http://localhost:3000", "http://localhost:5173", "https://predict-prep-port.vercel.app"],
         env="CORS_ORIGINS"
     )
     
